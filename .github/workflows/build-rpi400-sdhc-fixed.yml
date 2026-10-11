@@ -1,4 +1,4 @@
-name: Build fixed Arasan SDHC ARM64 candidate
+name: Build fixed Arasan SDHC ARM64 test package
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   build-sdhc-arm64:
-    name: Build bcm2836sdhc (ARM64, unsigned candidate)
+    name: Build bcm2836sdhc (ARM64 compile + test-signed package)
     runs-on: windows-2025-vs2026
     timeout-minutes: 18
 
@@ -241,7 +241,7 @@ jobs:
             "Upstream commit: $env:UPSTREAM_COMMIT",
             'Configuration: Release',
             'Platform: ARM64',
-            'Signing: Off (compile candidate only; not an installable package)',
+            'Root-level build output is unsigned; a separate test-signed package is generated under rpi400-sdhc-test-package/ later in this job.',
             'Required-fix checks: PR #25 cleanup/power callbacks; PR #26 early interrupt masking; INF ACPI\BCM2847 mapping'
           )
           Set-Content -LiteralPath (Join-Path $artifact 'BUILD-MANIFEST.txt') -Value $manifest -Encoding utf8
@@ -276,7 +276,7 @@ jobs:
           "Output binary: $($sys.FullName)" | Add-Content -LiteralPath (Join-Path $artifact 'BUILD-MANIFEST.txt')
           "Linker success marker in MSBuild log: $linkSucceeded" | Add-Content -LiteralPath (Join-Path $artifact 'BUILD-MANIFEST.txt')
           "Overall MSBuild exit code: $exitCode" | Add-Content -LiteralPath (Join-Path $artifact 'BUILD-MANIFEST.txt')
-          "Artifact type: unsigned compile candidate only; no catalog/signature included; not install-ready." |
+          "Root-level bcm2836sdhc.sys: unsigned compile-only copy; not install-ready. The separate rpi400-sdhc-test-package/ folder contains the test-signed package; CI did not establish trusted-chain verification for the per-run certificate." |
             Add-Content -LiteralPath (Join-Path $artifact 'BUILD-MANIFEST.txt')
 
           Get-FileHash -Algorithm SHA256 (Join-Path $artifact 'bcm2836sdhc.sys') |
@@ -519,11 +519,11 @@ jobs:
             Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($cert.Thumbprint)" -Force -ErrorAction SilentlyContinue
           }
 
-      - name: Upload compile candidate and logs
+      - name: Upload compile candidate, test package, and logs
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: rpi400-sdhc-arm64-unsigned-candidate
+          name: rpi400-sdhc-arm64-test-signed-candidate
           path: _sdhc_ci_artifact/
           if-no-files-found: warn
           retention-days: 14
