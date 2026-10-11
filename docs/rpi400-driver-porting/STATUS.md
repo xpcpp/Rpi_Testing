@@ -88,3 +88,17 @@ Run [#38113285423](https://github.com/xpcpp/Rpi_Testing/actions/runs/38113285423
 - [Mesa V3D](https://docs.mesa3d.org/drivers/v3d.html)
 - [Microsoft WiFiCx](https://learn.microsoft.com/en-us/windows-hardware/drivers/netcx/wifi-wdf-class-extension-wificx)
 - [Microsoft ARM64 driver builds](https://learn.microsoft.com/en-us/windows-hardware/drivers/develop/building-arm64-drivers)
+
+## CI follow-up — Run #12 stalled in package-validation step
+
+Checked on 2026-10-11 after Run #12 had completed the ARM64 compile/link step but remained in step 10, “Independently validate INF and create test-signed ARM64 package,” for several minutes. GitHub's live job summary did not expose the in-step command output, and its downloadable job log was not available while the job was still running, so the exact blocking command is not yet confirmed. No installable package was produced or verified at that point.
+
+Workflow hardening committed in Run #13 change `3ebd0f67fe4aa66c250b27105001d010c586eadf`:
+- Removed the duplicate recursive scan of all EXEs under the WDK/SDK NuGet and Windows Kits directories; package step resolves the required tools using PATH directories exposed earlier in the job.
+- Added per-command start/end logging and bounded execution for InfVerif, SignTool, Inf2Cat, and signature verification.
+- Added separate tool logs to the uploaded artifact so a timeout or non-zero exit should identify the precise command.
+
+Run #13: https://github.com/xpcpp/Rpi_Testing/actions/runs/38127948017
+
+This is diagnostics/CI hardening only. Do not install any unsigned compile candidate. Treat a test-signed package as experimental and not hardware-validated until INF validation, catalog creation, signature verification, and a controlled Pi 400 hardware test all pass.
+
