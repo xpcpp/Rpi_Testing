@@ -111,7 +111,7 @@ jobs:
           "StampInf: $($stampinf.FullName)"
           "Added tool directories to PATH:"
           $dirs | ForEach-Object { Write-Host "  $_" }
-          "Found WDK tools: $($found.Name | Sort-Object -Unique -join ', ')"
+          "Found WDK tools: $(($found.Name | Sort-Object -Unique) -join ', ')"
 
       - name: Verify required upstream fixes and build ARM64 driver
         shell: pwsh
