@@ -467,7 +467,7 @@ jobs:
                 throw "$Label failed for a reason other than the known ephemeral-root trust limitation (exit $exit). Inspect $LogPath."
               }
 
-              Write-Warning "$Label: SignTool reports only that the generated ephemeral root is not trusted on the hosted runner; no file/catalog digest-mismatch error was reported. This is not a trusted-chain pass."
+              Write-Warning ("{0}: SignTool reports only that the generated ephemeral root is not trusted on the hosted runner; no file/catalog digest-mismatch error was reported. This is not a trusted-chain pass." -f $Label)
               return 'PASS_SIGNATURE_DIGEST_EXPECTED_UNTRUSTED_ROOT'
             }
 
