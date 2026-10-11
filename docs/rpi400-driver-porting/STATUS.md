@@ -58,9 +58,9 @@ The Linux evidence confirms that the Pi 400's internal WLAN hardware, SDIO trans
 
 For graphics, Linux provides a practical reference: BCM2711 vc4 display/KMS plus v3d DRM and Mesa V3DV. The Windows side currently only proves Microsoft Basic Display output, so Windows GPU work remains a separate and much larger WDDM KMD + user-mode implementation effort.
 
-## Next action — offline/static driver review
+## Next action — targeted fixed-source candidate
 
-The requested Windows resource/parent report and signing-state report have been uploaded and reviewed. Do not ask the user to run another generic collector or repeat the known-failing installation. Inspect the existing SDHCI miniport lifecycle, interrupt handling, and SDC1 ACPI resource contract first. Only propose a code change/build if this review identifies a concrete hypothesis and a validation plan that does not simply repeat the failed attempt.
+Static review is documented in [SDHC-SOURCE-REVIEW.md](SDHC-SOURCE-REVIEW.md). The next distinct engineering step is a reproducible ARM64 build from upstream commit 31c2c748e6358711cd72467b7ad52da08691e54b (or a later reviewed snapshot) containing PR #25 and PR #26. This is not the user's 2020 binary. Keep compile validation separate from package signing and device installation; no Secure Boot or Test Signing settings should be changed as part of CI. No further user-side commands are needed for the static review.
 
 ## Phase tracker
 
@@ -68,7 +68,8 @@ The requested Windows resource/parent report and signing-state report have been 
 - [x] Linux diagnostics collected and reviewed: SDIO Wi-Fi and Linux V3D path confirmed working.
 - [x] Mark previously tested bcm2836sdhc driver as not a candidate to rebuild blindly; removed its reference-build workflow.
 - [x] **Phase 1 — Windows baseline/resource and install-history evidence collected.** Device resource values were not exposed by the collector; do not request another generic report.
-- [ ] **Phase 1 — offline/static review:** inspect SDHCI implementation and SDC1 ACPI resource contract; assess upstream interrupt/teardown issue #24 before proposing a distinct experiment.
+- [x] **Phase 1 — offline/static source review:** documented pre-fix package evidence and the upstream cleanup/early-interrupt fixes from PR #25 and PR #26. Runtime cause remains unproven.
+- [ ] **Phase 1 — targeted candidate build:** compile ARM64 from source containing both fixes; retain MSBuild logs and output hashes; keep signing/install separate from compile validation.
 - [ ] **Phase 2 — built-in CYW43455 Wi-Fi:** after the Windows bus path is understood, design/assess a Windows-native implementation using WiFiCx/KMDF/NetAdapterCx. Advanced monitor/injection features are not in the initial scope.
 - [ ] **Phase 3 — GPU diagnosis:** compare Windows display/render stack with Linux vc4/v3d/Mesa evidence and audit available Windows roskmd.sys materials.
 - [ ] **Phase 4 — real 3D acceleration:** long-term implementation requiring a working WDDM render kernel driver and compatible user-mode graphics runtime; not a build-only task.
