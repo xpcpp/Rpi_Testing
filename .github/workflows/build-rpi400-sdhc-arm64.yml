@@ -29,21 +29,31 @@ jobs:
       - name: Set up MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      - name: Verify MSBuild and WDK availability
+      - name: Inspect MSBuild and Windows Driver Kit setup
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path build-logs | Out-Null
           $msbuild = Get-Command msbuild.exe -ErrorAction Stop
           Write-Host "MSBuild: $($msbuild.Source)"
-          $wdkBuild = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\build'
+          $programFilesX86 = (Get-Item 'Env:ProgramFiles(x86)').Value
+          $wdkBuild = Join-Path $programFilesX86 'Windows Kits\10\build'
           if (-not (Test-Path $wdkBuild)) {
-            throw "WDK build folder not found: $wdkBuild"
+            throw "Windows Kits build folder not found: $wdkBuild"
           }
-          $driverProps = Get-ChildItem -Path $wdkBuild -Filter 'WindowsKernelModeDriver10.0.props' -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $driverProps) {
-            throw 'WindowsKernelModeDriver10.0.props was not found. The selected runner image must include the WDK.'
+          Write-Host "Windows Kits build root: $wdkBuild"
+          Get-ChildItem -Path $wdkBuild -Directory | Select-Object FullName | Format-Table -AutoSize
+          $wdkFiles = Get-ChildItem -Path $wdkBuild -Filter '*.props' -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 30 -ExpandProperty FullName
+          if ($wdkFiles) { $wdkFiles | ForEach-Object { Write-Host "WDK props: $_" } }
+          else { Write-Warning 'No .props files found under the Windows Kits build root; MSBuild will provide the authoritative project/toolset error if integration is missing.' }
+          $vsWhere = Join-Path $programFilesX86 'Microsoft Visual Studio\Installer\vswhere.exe'
+          if (Test-Path $vsWhere) {
+            $vsPath = & $vsWhere -products '*' -latest -property installationPath
+            Write-Host "Visual Studio: $vsPath"
+            if ($vsPath -and (Test-Path (Join-Path $vsPath 'MSBuild\Microsoft\VC'))) {
+              Get-ChildItem -Path (Join-Path $vsPath 'MSBuild\Microsoft\VC') -Filter '*Driver*.props' -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 20 -ExpandProperty FullName | ForEach-Object { Write-Host "VS driver props: $_" }
+            }
           }
-          Write-Host "WDK project props: $($driverProps.FullName)"
           Write-Host 'Pinned upstream commit: 88ee238c9debecce810d208cac1e5f36add3d2a1'
 
       - name: Build upstream Arasan SDHC driver for ARM64
@@ -101,7 +111,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: rpi400-bcm2836sdhc-arm64-reference-${{ github.run_number }}
+          name: rpi400-bcm2836sdhc-arm64-reference
           path: |
             artifacts/RPi400-BCM2836SDHC-ARM64/**
             build-logs/**
