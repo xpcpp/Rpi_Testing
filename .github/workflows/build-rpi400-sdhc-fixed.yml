@@ -52,37 +52,50 @@ jobs:
           "Pinned upstream commit: $actual"
           git -C $upstream log -1 --format="%H%n%cs%n%s"
 
-      - name: Add explicit Raspberry Pi 400 SDC1 hardware-ID match
+      - name: Patch INF for Pi 400 ID and modern Universal INF validation
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $inf = Join-Path $env:UPSTREAM_DIR 'drivers\sd\bcm2836\bcm2836sdhc\bcm2836sdhc.inf'
           $text = Get-Content -LiteralPath $inf -Raw
+
+          # BasicDriverOk is a legacy ControlFlags directive that the Universal INF
+          # validator rejects (ERROR 1208). It affects legacy device-selection behavior,
+          # not the SDHC miniport's runtime; current Microsoft driver samples removed it.
+          if ($text -notmatch '(?im)^\[ControlFlags\]\s*$') {
+            throw 'Pinned INF has no [ControlFlags] section; refusing a blind edit.'
+          }
+          if ($text -match '(?im)^[ \t]*BasicDriverOk[ \t]*=') {
+            $text = [regex]::Replace($text, '(?im)^[ \t]*BasicDriverOk[ \t]*=[^\r\n]*(?:\r?\n|$)', '')
+            Write-Host 'Removed legacy BasicDriverOk directive (Universal INF ERROR 1208).'
+          }
+
           $old = '%ACPI\ARASAN.DeviceDesc%=SDHost, ACPI\ARASAN'
           $new = '%ACPI\ARASAN.DeviceDesc%=SDHost, ACPI\BCM2847, ACPI\ARASAN'
-
           if ($text -match '(?im)^%ACPI\\ARASAN\.DeviceDesc%=SDHost,\s*ACPI\\BCM2847,\s*ACPI\\ARASAN\s*$') {
-            Write-Host 'Pinned INF already contains ACPI\BCM2847 hardware match.'
+            Write-Host 'INF already contains ACPI\BCM2847 hardware match.'
           } elseif ($text.Contains($old)) {
             $text = $text.Replace($old, $new)
-            [System.IO.File]::WriteAllText($inf, $text, [System.Text.UTF8Encoding]::new($false))
             Write-Host 'Added explicit ACPI\BCM2847 match to the pinned Arasan INF.'
           } else {
             throw 'Unexpected pinned INF model line; refusing to silently patch the wrong source.'
           }
 
-          $patched = Get-Content -LiteralPath $inf -Raw
-          if ($patched -notmatch '(?im)^%ACPI\\ARASAN\.DeviceDesc%=SDHost,\s*ACPI\\BCM2847,\s*ACPI\\ARASAN\s*$') {
+          if ($text -match '(?im)^[ \t]*BasicDriverOk[ \t]*=') {
+            throw 'BasicDriverOk removal failed; refusing to continue.'
+          }
+          if ($text -notmatch '(?im)^%ACPI\\ARASAN\.DeviceDesc%=SDHost,\s*ACPI\\BCM2847,\s*ACPI\\ARASAN\s*$') {
             throw 'Required ACPI\BCM2847 model entry missing after patch.'
           }
+          [System.IO.File]::WriteAllText($inf, $text, [System.Text.UTF8Encoding]::new($false))
           Select-String -LiteralPath $inf -Pattern 'ACPI\\BCM2847'
           $artifact = Join-Path $env:GITHUB_WORKSPACE '_sdhc_ci_artifact'
           New-Item -ItemType Directory -Path $artifact -Force | Out-Null
           @(
-            'Pinned upstream INF did not list the Raspberry Pi 400 SDC1 compatible ID ACPI\BCM2847.'
-            'CI adds ACPI\BCM2847 before the existing generic ACPI\ARASAN entry.'
-            'This follows the user-provided 2020 INF and the current upstream INF model line.'
-            'The resulting INF is independently checked before catalog generation/signing.'
+            'Pinned upstream INF was patched for Windows 11 Universal INF validation.'
+            'Removed [ControlFlags] BasicDriverOk=* because InfVerif rejects it with ERROR(1208).'
+            'Added ACPI\BCM2847 before the existing generic ACPI\ARASAN model ID for the Pi 400 SDC1.'
+            'This is a compatibility patch to the pinned upstream INF; see the exact INF in this artifact.'
           ) | Set-Content -LiteralPath (Join-Path $artifact 'INF-HARDWARE-ID-PATCH.txt') -Encoding UTF8
 
       - name: Configure and restore WDK ARM64 NuGet packages
