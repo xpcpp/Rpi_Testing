@@ -148,24 +148,56 @@ jobs:
 
           & $env:MSBUILD_PATH $project '/t:Build' '/p:Configuration=Release' '/p:Platform=ARM64' "/p:SolutionDir=$solutionDir" '/p:SignMode=Off' '/p:EnableInf2cat=false' '/m' '/v:normal' "/flp:logfile=$buildLog;verbosity=normal"
           $exitCode = $LASTEXITCODE
-          if ($exitCode -ne 0) {
-            "MSBuild exit code: $exitCode" | Add-Content -LiteralPath (Join-Path $artifact 'BUILD-MANIFEST.txt')
-            throw "ARM64 MSBuild failed with exit code $exitCode"
-          }
-
           $outRoot = Join-Path $env:UPSTREAM_DIR 'build\bcm2836\ARM64\Release\Output'
           $sys = Get-ChildItem -LiteralPath $outRoot -Filter 'bcm2836sdhc.sys' -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $sys) {
-            Get-ChildItem -LiteralPath (Join-Path $env:UPSTREAM_DIR 'build\bcm2836\ARM64\Release') -File -Recurse -ErrorAction SilentlyContinue |
-              Select-Object FullName, Length | Format-Table -AutoSize |
-              Out-String | Add-Content -LiteralPath (Join-Path $artifact 'BUILD-MANIFEST.txt')
-            throw "Build exited successfully but bcm2836sdhc.sys was not found under $outRoot"
+          $linkSucceeded = $false
+          if (Test-Path -LiteralPath $buildLog) {
+            $linkSucceeded = Select-String -LiteralPath $buildLog -Pattern 'bcm2836sdhc\.vcxproj -> .*bcm2836sdhc\.sys' -Quiet
           }
+
+          if (-not $sys) {
+            "MSBuild exit code: $exitCode" | Add-Content -LiteralPath (Join-Path $artifact 'BUILD-MANIFEST.txt')
+            if (Test-Path -LiteralPath $buildLog) {
+              Get-Content -LiteralPath $buildLog -Tail 120 |
+                Add-Content -LiteralPath (Join-Path $artifact 'BUILD-MANIFEST.txt')
+            }
+            throw "No bcm2836sdhc.sys output was produced. MSBuild exit code: $exitCode"
+          }
+
           Copy-Item -LiteralPath $sys.FullName -Destination (Join-Path $artifact 'bcm2836sdhc.sys')
-          Copy-Item -LiteralPath (Join-Path $env:UPSTREAM_DIR 'drivers\sd\bcm2836\bcm2836sdhc\bcm2836sdhc.inf') -Destination (Join-Path $artifact 'bcm2836sdhc.inf')
+          $stampedInf = Join-Path $outRoot 'bcm2836sdhc.inf'
+          if (Test-Path -LiteralPath $stampedInf) {
+            Copy-Item -LiteralPath $stampedInf -Destination (Join-Path $artifact 'bcm2836sdhc.inf')
+          } else {
+            Copy-Item -LiteralPath (Join-Path $env:UPSTREAM_DIR 'drivers\sd\bcm2836\bcm2836sdhc\bcm2836sdhc.inf') -Destination (Join-Path $artifact 'bcm2836sdhc.inf')
+          }
+
           "Output binary: $($sys.FullName)" | Add-Content -LiteralPath (Join-Path $artifact 'BUILD-MANIFEST.txt')
+          "Linker success marker in MSBuild log: $linkSucceeded" | Add-Content -LiteralPath (Join-Path $artifact 'BUILD-MANIFEST.txt')
+          "Overall MSBuild exit code: $exitCode" | Add-Content -LiteralPath (Join-Path $artifact 'BUILD-MANIFEST.txt')
+          "Artifact type: unsigned compile candidate only; no catalog/signature included; not install-ready." |
+            Add-Content -LiteralPath (Join-Path $artifact 'BUILD-MANIFEST.txt')
+
           Get-FileHash -Algorithm SHA256 (Join-Path $artifact 'bcm2836sdhc.sys') |
             Format-List | Out-String | Add-Content -LiteralPath (Join-Path $artifact 'BUILD-MANIFEST.txt')
+
+          if ($exitCode -ne 0) {
+            $tail = if (Test-Path -LiteralPath $buildLog) { Get-Content -LiteralPath $buildLog -Tail 200 } else { @() }
+            $validationOnly = ($tail -match 'INF verification exception') -and ($tail -match 'ApiValidator|MSB3721')
+            if ($linkSucceeded -and $validationOnly) {
+              @(
+                'RESULT: C/C++ compile and link produced bcm2836sdhc.sys.'
+                'QUALIFICATION: WDK post-build validators failed in the current NuGet layout (InfVerif.dll load failure and ApiValidator tool/dependency failure).'
+                'This artifact is useful only for compile/source inspection and is NOT a validated or installable driver package.'
+              ) | Add-Content -LiteralPath (Join-Path $artifact 'BUILD-MANIFEST.txt')
+              Write-Warning 'Compiler/linker produced a candidate, but post-build validation failed; details are retained in the manifest and log.'
+            } else {
+              throw "MSBuild exited $exitCode and the failure was not safely classifiable as post-build validation only. See msbuild log."
+            }
+          } else {
+            'RESULT: MSBuild completed successfully.' |
+              Add-Content -LiteralPath (Join-Path $artifact 'BUILD-MANIFEST.txt')
+          }
 
       - name: Upload compile candidate and logs
         if: always()
