@@ -456,7 +456,7 @@ jobs:
               )
               $exit = Invoke-LoggedTool -Label $Label -ToolPath $signtool -Arguments $Arguments -LogPath $LogPath -TimeoutSeconds 90
               if ($exit -eq 0) {
-                Write-Host "$Label: full SignTool verification PASS."
+                Write-Host ("{0}: full SignTool verification PASS." -f $Label)
                 return 'PASS_FULL_TRUST'
               }
 
@@ -473,8 +473,10 @@ jobs:
 
             $verifyDriverLog = Join-Path $artifact 'signtool-verify-driver.log'
             $verifyDriverStatus = Invoke-SignatureCheck -Label 'Verify embedded driver signature and image digest' -Arguments @('verify', '/v', '/pa', (Join-Path $package 'bcm2836sdhc.sys')) -LogPath $verifyDriverLog
+            $verifyCatFileLog = Join-Path $artifact 'signtool-verify-catalog-file.log'
+            $verifyCatFileStatus = Invoke-SignatureCheck -Label 'Verify signed catalog file' -Arguments @('verify', '/v', '/pa', $cat) -LogPath $verifyCatFileLog
             $verifyCatLog = Join-Path $artifact 'signtool-verify-catalog.log'
-            $verifyCatStatus = Invoke-SignatureCheck -Label 'Verify signed catalog and INF membership' -Arguments @('verify', '/v', '/pa', '/c', $cat, (Join-Path $package 'bcm2836sdhc.inf')) -LogPath $verifyCatLog
+            $verifyCatStatus = Invoke-SignatureCheck -Label 'Verify catalog signature and INF membership' -Arguments @('verify', '/v', '/pa', '/c', $cat, (Join-Path $package 'bcm2836sdhc.inf')) -LogPath $verifyCatLog
 
             @'
           TEST-SIGNED EXPERIMENTAL DRIVER PACKAGE — NOT A PRODUCTION/RELEASE DRIVER
@@ -497,6 +499,8 @@ jobs:
             'Driver and catalog signed by ephemeral CI code-signing certificate; private key excluded.' |
               Add-Content -LiteralPath (Join-Path $artifact 'BUILD-MANIFEST.txt')
             "SignTool embedded-driver check: $verifyDriverStatus" |
+              Add-Content -LiteralPath (Join-Path $artifact 'BUILD-MANIFEST.txt')
+            "SignTool catalog-file check: $verifyCatFileStatus" |
               Add-Content -LiteralPath (Join-Path $artifact 'BUILD-MANIFEST.txt')
             "SignTool catalog/INF check: $verifyCatStatus" |
               Add-Content -LiteralPath (Join-Path $artifact 'BUILD-MANIFEST.txt')
