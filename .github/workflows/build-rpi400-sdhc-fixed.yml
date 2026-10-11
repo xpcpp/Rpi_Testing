@@ -320,18 +320,66 @@ jobs:
             throw 'Package INF missing explicit ACPI\BCM2847 model mapping; refusing to sign.'
           }
 
-          $packages = Join-Path $env:UPSTREAM_DIR 'packages'
-          $kitRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10'
-          $searchRoots = @($packages, (Join-Path $kitRoot 'bin')) | Where-Object { Test-Path -LiteralPath $_ }
-          $tools = Get-ChildItem -Path $searchRoots -Filter '*.exe' -File -Recurse -ErrorAction SilentlyContinue
+          # Step 7 already exposed WDK tool directories through GITHUB_PATH. Resolve just
+          # the required tools here instead of recursively scanning entire package trees again.
+          $toolDirectories = @($env:PATH -split ';' | ForEach-Object { $_.Trim() } |
+            Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Container) } |
+            Select-Object -Unique)
 
           function Find-Tool([string]$Name) {
-            $toolCandidates = @($tools | Where-Object { $_.Name -ieq $Name })
-            if (-not $toolCandidates.Count) { throw "Required WDK tool not found: $Name" }
+            $toolCandidates = @(
+              foreach ($dir in $toolDirectories) {
+                $candidate = Join-Path $dir $Name
+                if (Test-Path -LiteralPath $candidate -PathType Leaf) { Get-Item -LiteralPath $candidate }
+              }
+            )
+            if (-not $toolCandidates.Count) {
+              throw "Required WDK tool not found on PATH: $Name. Step 7 should have exposed its directory."
+            }
             $pinned = $toolCandidates | Where-Object { $_.FullName -match '10\.0\.28000\.0' -and $_.FullName -match '\\x64\\' } | Select-Object -First 1
             if (-not $pinned) { $pinned = $toolCandidates | Where-Object { $_.FullName -match '10\.0\.28000\.0' } | Select-Object -First 1 }
             if (-not $pinned) { $pinned = $toolCandidates | Select-Object -First 1 }
+            Write-Host "Resolved $Name -> $($pinned.FullName)"
             return $pinned.FullName
+          }
+
+          function Invoke-LoggedTool {
+            param(
+              [Parameter(Mandatory=$true)][string]$Label,
+              [Parameter(Mandatory=$true)][string]$ToolPath,
+              [Parameter(Mandatory=$true)][string[]]$Arguments,
+              [Parameter(Mandatory=$true)][string]$LogPath,
+              [int]$TimeoutSeconds = 120
+            )
+            Write-Host ("START: {0} (timeout {1}s)" -f $Label, $TimeoutSeconds)
+            Write-Host "Executable: $ToolPath"
+            $psi = [System.Diagnostics.ProcessStartInfo]::new()
+            $psi.FileName = $ToolPath
+            $psi.UseShellExecute = $false
+            $psi.CreateNoWindow = $true
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            foreach ($arg in $Arguments) { [void]$psi.ArgumentList.Add($arg) }
+
+            $proc = [System.Diagnostics.Process]::new()
+            $proc.StartInfo = $psi
+            if (-not $proc.Start()) { throw "Could not start $Label." }
+            $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+            $stderrTask = $proc.StandardError.ReadToEndAsync()
+            if (-not $proc.WaitForExit($TimeoutSeconds * 1000)) {
+              try { $proc.Kill($true) } catch {}
+              try { $proc.WaitForExit(5000) | Out-Null } catch {}
+              throw "$Label exceeded $TimeoutSeconds seconds and was terminated. Inspect $LogPath."
+            }
+            $proc.WaitForExit()
+            $stdout = $stdoutTask.GetAwaiter().GetResult()
+            $stderr = $stderrTask.GetAwaiter().GetResult()
+            $logText = @("Label: $Label", "Executable: $ToolPath", "Exit code: $($proc.ExitCode)", '', $stdout, $stderr) -join [Environment]::NewLine
+            [System.IO.File]::WriteAllText($LogPath, $logText, [System.Text.UTF8Encoding]::new($false))
+            if ($stdout) { Write-Host $stdout }
+            if ($stderr) { Write-Host $stderr }
+            Write-Host "END: $Label (exit $($proc.ExitCode))"
+            return [int]$proc.ExitCode
           }
 
           $infverif = Find-Tool 'infverif.exe'
@@ -341,14 +389,7 @@ jobs:
           # The WDK MSBuild target logs a DLL-loading exception for its bundled InfVerif task.
           # Run the supported command-line validator explicitly against the stamped package INF.
           $infLog = Join-Path $artifact 'infverif-standalone.log'
-          Push-Location $package
-          try {
-            & $infverif '/u' '/v' (Join-Path $package 'bcm2836sdhc.inf') 2>&1 |
-              Tee-Object -FilePath $infLog
-            $infExit = $LASTEXITCODE
-          } finally {
-            Pop-Location
-          }
+          $infExit = Invoke-LoggedTool -Label 'Standalone InfVerif /u /v' -ToolPath $infverif -Arguments @('/u', '/v', (Join-Path $package 'bcm2836sdhc.inf')) -LogPath $infLog -TimeoutSeconds 180
           "InfVerif command: $infverif /u /v bcm2836sdhc.inf" |
             Add-Content -LiteralPath (Join-Path $artifact 'BUILD-MANIFEST.txt')
           "InfVerif exit code: $infExit" |
@@ -369,25 +410,30 @@ jobs:
           Export-Certificate -Cert $cert -FilePath $cer | Out-Null
 
           try {
-            & $signtool sign /v /fd SHA256 /f $pfx /p $passwordText (Join-Path $package 'bcm2836sdhc.sys')
-            if ($LASTEXITCODE -ne 0) { throw "SignTool failed signing bcm2836sdhc.sys (exit $LASTEXITCODE)." }
+            $driverSignLog = Join-Path $artifact 'signtool-driver.log'
+            $signExit = Invoke-LoggedTool -Label 'Sign driver image' -ToolPath $signtool -Arguments @('sign', '/v', '/fd', 'SHA256', '/f', $pfx, '/p', $passwordText, (Join-Path $package 'bcm2836sdhc.sys')) -LogPath $driverSignLog -TimeoutSeconds 90
+            if ($signExit -ne 0) { throw "SignTool failed signing bcm2836sdhc.sys (exit $signExit); see $driverSignLog." }
 
-            & $inf2cat "/driver:$package" '/os:10_NI_ARM64' '/verbose'
-            if ($LASTEXITCODE -ne 0) { throw "Inf2Cat failed for Windows 11 22H2 ARM64 (exit $LASTEXITCODE)." }
+            $inf2catLog = Join-Path $artifact 'inf2cat.log'
+            $catExit = Invoke-LoggedTool -Label 'Inf2Cat /os:10_NI_ARM64' -ToolPath $inf2cat -Arguments @("/driver:$package", '/os:10_NI_ARM64', '/verbose') -LogPath $inf2catLog -TimeoutSeconds 180
+            if ($catExit -ne 0) { throw "Inf2Cat failed for Windows 11 22H2 ARM64 (exit $catExit); see $inf2catLog." }
 
             $cat = Join-Path $package 'bcm2836sdhc.cat'
             if (-not (Test-Path -LiteralPath $cat)) { throw "Inf2Cat returned success but catalog file not found: $cat" }
 
-            & $signtool sign /v /fd SHA256 /f $pfx /p $passwordText $cat
-            if ($LASTEXITCODE -ne 0) { throw "SignTool failed signing catalog (exit $LASTEXITCODE)." }
+            $catSignLog = Join-Path $artifact 'signtool-catalog.log'
+            $signCatExit = Invoke-LoggedTool -Label 'Sign catalog' -ToolPath $signtool -Arguments @('sign', '/v', '/fd', 'SHA256', '/f', $pfx, '/p', $passwordText, $cat) -LogPath $catSignLog -TimeoutSeconds 90
+            if ($signCatExit -ne 0) { throw "SignTool failed signing catalog (exit $signCatExit); see $catSignLog." }
 
             Import-Certificate -FilePath $cer -CertStoreLocation 'Cert:\CurrentUser\Root' | Out-Null
             Import-Certificate -FilePath $cer -CertStoreLocation 'Cert:\CurrentUser\TrustedPublisher' | Out-Null
 
-            & $signtool verify /v /pa (Join-Path $package 'bcm2836sdhc.sys')
-            if ($LASTEXITCODE -ne 0) { throw "Embedded driver signature verification failed." }
-            & $signtool verify /v /pa '/c' $cat (Join-Path $package 'bcm2836sdhc.inf')
-            if ($LASTEXITCODE -ne 0) { throw "Catalog signature/package verification failed." }
+            $verifyDriverLog = Join-Path $artifact 'signtool-verify-driver.log'
+            $verifyDriverExit = Invoke-LoggedTool -Label 'Verify embedded driver signature' -ToolPath $signtool -Arguments @('verify', '/v', '/pa', (Join-Path $package 'bcm2836sdhc.sys')) -LogPath $verifyDriverLog -TimeoutSeconds 90
+            if ($verifyDriverExit -ne 0) { throw "Embedded driver signature verification failed; see $verifyDriverLog." }
+            $verifyCatLog = Join-Path $artifact 'signtool-verify-catalog.log'
+            $verifyCatExit = Invoke-LoggedTool -Label 'Verify signed catalog and INF' -ToolPath $signtool -Arguments @('verify', '/v', '/pa', '/c', $cat, (Join-Path $package 'bcm2836sdhc.inf')) -LogPath $verifyCatLog -TimeoutSeconds 90
+            if ($verifyCatExit -ne 0) { throw "Catalog signature/package verification failed; see $verifyCatLog." }
 
             @'
           TEST-SIGNED EXPERIMENTAL DRIVER PACKAGE — NOT A PRODUCTION/RELEASE DRIVER
