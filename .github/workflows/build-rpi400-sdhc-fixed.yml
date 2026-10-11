@@ -1,0 +1,152 @@
+name: Build fixed Arasan SDHC ARM64 candidate
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/build-rpi400-sdhc-fixed.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-sdhc-arm64:
+    name: Build bcm2836sdhc (ARM64, unsigned candidate)
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 30
+
+    env:
+      UPSTREAM_REPO: https://github.com/raspberrypi/windows-drivers.git
+      UPSTREAM_COMMIT: 31c2c748e6358711cd72467b7ad52da08691e54b
+
+    steps:
+      - name: Check out project notes
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Locate MSBuild
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) { throw "vswhere.exe not found: $vswhere" }
+          $found = & $vswhere -latest -products '*' -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe'
+          $msbuild = $found | Select-Object -First 1
+          if (-not $msbuild -or -not (Test-Path $msbuild)) { throw "MSBuild.exe not found through vswhere." }
+          "MSBUILD_PATH=$msbuild" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          & $msbuild -version -nologo
+
+      - name: Fetch pinned upstream source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $upstream = Join-Path $env:RUNNER_TEMP 'windows-drivers'
+          git clone --no-checkout $env:UPSTREAM_REPO $upstream
+          if ($LASTEXITCODE -ne 0) { throw "git clone failed" }
+          git -C $upstream fetch --depth 1 origin $env:UPSTREAM_COMMIT
+          if ($LASTEXITCODE -ne 0) { throw "fetch of pinned commit failed" }
+          git -C $upstream checkout --detach $env:UPSTREAM_COMMIT
+          if ($LASTEXITCODE -ne 0) { throw "checkout of pinned commit failed" }
+          $actual = (git -C $upstream rev-parse HEAD).Trim()
+          if ($actual -ne $env:UPSTREAM_COMMIT) { throw "Source pin mismatch: expected $env:UPSTREAM_COMMIT, got $actual" }
+          "UPSTREAM_DIR=$upstream" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "Pinned upstream commit: $actual"
+          git -C $upstream log -1 --format="%H%n%cs%n%s"
+
+      - name: Configure and restore WDK ARM64 NuGet packages
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $packages = @'
+          <?xml version="1.0" encoding="utf-8"?>
+          <packages>
+            <package id="Microsoft.Windows.SDK.CPP" version="10.0.28000.2526" targetFramework="native" />
+            <package id="Microsoft.Windows.SDK.CPP.x64" version="10.0.28000.2526" targetFramework="native" />
+            <package id="Microsoft.Windows.SDK.CPP.arm64" version="10.0.28000.2526" targetFramework="native" />
+            <package id="Microsoft.Windows.WDK.x64" version="10.0.28000.2526" targetFramework="native" />
+            <package id="Microsoft.Windows.WDK.arm64" version="10.0.28000.2526" targetFramework="native" />
+          </packages>
+          '@
+          $props = @'
+          <Project>
+            <Import Project="packages\Microsoft.Windows.WDK.x64.10.0.28000.2526\build\native\Microsoft.Windows.WDK.x64.props" Condition="Exists('packages\Microsoft.Windows.WDK.x64.10.0.28000.2526\build\native\Microsoft.Windows.WDK.x64.props') and '$(Platform)' == 'x64'"/>
+            <Import Project="packages\Microsoft.Windows.WDK.arm64.10.0.28000.2526\build\native\Microsoft.Windows.WDK.arm64.props" Condition="Exists('packages\Microsoft.Windows.WDK.arm64.10.0.28000.2526\build\native\Microsoft.Windows.WDK.arm64.props') and '$(Platform)' == 'ARM64'"/>
+            <Import Project="packages\Microsoft.Windows.SDK.CPP.x64.10.0.28000.2526\build\native\Microsoft.Windows.SDK.cpp.x64.props" Condition="Exists('packages\Microsoft.Windows.SDK.CPP.x64.10.0.28000.2526\build\native\Microsoft.Windows.SDK.cpp.x64.props') and '$(Platform)' == 'x64'"/>
+            <Import Project="packages\Microsoft.Windows.SDK.CPP.arm64.10.0.28000.2526\build\native\Microsoft.Windows.SDK.cpp.arm64.props" Condition="Exists('packages\Microsoft.Windows.SDK.CPP.arm64.10.0.28000.2526\build\native\Microsoft.Windows.SDK.cpp.arm64.props') and '$(Platform)' == 'ARM64'"/>
+            <Import Project="packages\Microsoft.Windows.SDK.CPP.10.0.28000.2526\build\native\Microsoft.Windows.SDK.cpp.props" Condition="Exists('packages\Microsoft.Windows.SDK.CPP.10.0.28000.2526\build\native\Microsoft.Windows.SDK.cpp.props')"/>
+          </Project>
+          '@
+          Set-Content -LiteralPath (Join-Path $env:UPSTREAM_DIR 'packages.config') -Value $packages -Encoding utf8
+          Set-Content -LiteralPath (Join-Path $env:UPSTREAM_DIR 'Directory.Build.props') -Value $props -Encoding utf8
+          nuget restore (Join-Path $env:UPSTREAM_DIR 'packages.config') -PackagesDirectory (Join-Path $env:UPSTREAM_DIR 'packages')
+          if ($LASTEXITCODE -ne 0) { throw "NuGet WDK/SDK restore failed with exit code $LASTEXITCODE" }
+          $required = @(
+            'Microsoft.Windows.WDK.arm64.10.0.28000.2526\build\native\Microsoft.Windows.WDK.arm64.props',
+            'Microsoft.Windows.SDK.CPP.arm64.10.0.28000.2526\build\native\Microsoft.Windows.SDK.cpp.arm64.props'
+          )
+          foreach ($path in $required) {
+            if (-not (Test-Path (Join-Path (Join-Path $env:UPSTREAM_DIR 'packages') $path))) {
+              throw "Expected WDK/SDK props not found after restore: $path"
+            }
+          }
+
+      - name: Verify required upstream fixes and build ARM64 driver
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $source = Join-Path $env:UPSTREAM_DIR 'drivers\sd\bcm2836\bcm2836sdhc\bcm2836sdhc.c'
+          $text = Get-Content -LiteralPath $source -Raw
+          if ($text -notmatch 'InitializationData\.Cleanup\s*=\s*SdhcCleanup') {
+            throw 'Pinned source is missing PR #25 cleanup callback fix.'
+          }
+          if ($text -notmatch 'InitializationData\.PowerControlCallback\s*=\s*SdhcPowerControlCallback') {
+            throw 'Pinned source is missing PR #25 power-control callback fix.'
+          }
+          if ($text -notmatch '(?s)SDHC_INTERRUPT_ERROR_SIGNAL_ENABLE,\s*0\s*\);') {
+            throw 'Pinned source is missing PR #26 early-interrupt fix.'
+          }
+
+          $artifact = Join-Path $env:GITHUB_WORKSPACE '_sdhc_ci_artifact'
+          New-Item -ItemType Directory -Path $artifact -Force | Out-Null
+          $solution = Join-Path $env:UPSTREAM_DIR 'build\bcm2836\buildbcm2836.sln'
+          $buildLog = Join-Path $artifact 'msbuild-arm64-release.log'
+          $manifest = @(
+            'Project: Raspberry Pi Arasan SDHC miniport (bcm2836sdhc)',
+            "Upstream repository: $env:UPSTREAM_REPO",
+            "Upstream commit: $env:UPSTREAM_COMMIT",
+            'Configuration: Release',
+            'Platform: ARM64',
+            'Signing: Off (compile candidate only; not an installable package)',
+            'Required-fix checks: PR #25 cleanup/power callbacks; PR #26 early interrupt masking'
+          )
+          Set-Content -LiteralPath (Join-Path $artifact 'BUILD-MANIFEST.txt') -Value $manifest -Encoding utf8
+          Copy-Item -LiteralPath $source -Destination (Join-Path $artifact 'bcm2836sdhc.c')
+
+          & $env:MSBUILD_PATH $solution '/t:bcm2836sdhc:Build' '/p:Configuration=Release' '/p:Platform=ARM64' '/p:SignMode=Off' '/p:EnableInf2cat=false' '/m' '/v:normal' "/flp:logfile=$buildLog;verbosity=normal"
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0) {
+            "MSBuild exit code: $exitCode" | Add-Content -LiteralPath (Join-Path $artifact 'BUILD-MANIFEST.txt')
+            throw "ARM64 MSBuild failed with exit code $exitCode"
+          }
+
+          $outRoot = Join-Path $env:UPSTREAM_DIR 'build\bcm2836\ARM64\Release\Output'
+          $sys = Get-ChildItem -LiteralPath $outRoot -Filter 'bcm2836sdhc.sys' -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $sys) {
+            Get-ChildItem -LiteralPath (Join-Path $env:UPSTREAM_DIR 'build\bcm2836\ARM64\Release') -File -Recurse -ErrorAction SilentlyContinue |
+              Select-Object FullName, Length | Format-Table -AutoSize |
+              Out-String | Add-Content -LiteralPath (Join-Path $artifact 'BUILD-MANIFEST.txt')
+            throw "Build exited successfully but bcm2836sdhc.sys was not found under $outRoot"
+          }
+          Copy-Item -LiteralPath $sys.FullName -Destination (Join-Path $artifact 'bcm2836sdhc.sys')
+          Copy-Item -LiteralPath (Join-Path $env:UPSTREAM_DIR 'drivers\sd\bcm2836\bcm2836sdhc\bcm2836sdhc.inf') -Destination (Join-Path $artifact 'bcm2836sdhc.inf')
+          "Output binary: $($sys.FullName)" | Add-Content -LiteralPath (Join-Path $artifact 'BUILD-MANIFEST.txt')
+          Get-FileHash -Algorithm SHA256 (Join-Path $artifact 'bcm2836sdhc.sys') |
+            Format-List | Out-String | Add-Content -LiteralPath (Join-Path $artifact 'BUILD-MANIFEST.txt')
+
+      - name: Upload compile candidate and logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rpi400-sdhc-arm64-unsigned-candidate
+          path: _sdhc_ci_artifact/
+          if-no-files-found: warn
+          retention-days: 14
