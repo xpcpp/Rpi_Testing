@@ -32,6 +32,12 @@ The UEFI ACPI template [Sdhc.asl](https://github.com/tianocore/edk2-platforms/bl
 
 This makes the early-interrupt change a concrete, evidence-based candidate for a controlled rebuild, rather than a blind rebuild of the same 2020 package. It still does not prove this was the exact cause of the user's observed failure.
 
+### Additional compatibility blocker — pinned INF lacks the Pi 400 SDC1 ID
+
+A comparison of INF blobs found that the pinned April 2021 merge commit's `bcm2836sdhc.inf` contains only the model entry for `ACPI\\ARASAN`; it omits `ACPI\\BCM2847`. The user's 2020 INF (SetupAPI log line 503) and the current upstream INF blob both list `ACPI\\BCM2847, ACPI\\ARASAN`. Windows sees this device as hardware/compatible ID `ACPI\\BCM2847` (BIOS path `_SB.GDV0.SDC1`). Therefore, rebuilding the pinned INF unchanged would not match the target device, regardless of whether the .sys compiles.
+
+The CI workflow now has an explicit, checked INF model-line patch that adds `ACPI\\BCM2847` before `ACPI\\ARASAN`. It refuses to continue if the expected line or the patch result differs, and the package stage checks the generated INF again before creating a catalog. This is a deliberate compatibility patch beyond the pinned upstream commit and is recorded in the artifact. This model-entry correction does not prove the host miniport will start or enumerate an SDIO child on the Pi 400.
+
 ## What the user's logs establish
 
 - First pnputil /add-driver attempt was rejected during catalog trust validation with 0x800B0109.
