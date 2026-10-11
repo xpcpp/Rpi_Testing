@@ -107,7 +107,8 @@ jobs:
 
           $artifact = Join-Path $env:GITHUB_WORKSPACE '_sdhc_ci_artifact'
           New-Item -ItemType Directory -Path $artifact -Force | Out-Null
-          $solution = Join-Path $env:UPSTREAM_DIR 'build\bcm2836\buildbcm2836.sln'
+          $project = Join-Path $env:UPSTREAM_DIR 'drivers\sd\bcm2836\bcm2836sdhc\bcm2836sdhc.vcxproj'
+          $solutionDir = (Join-Path $env:UPSTREAM_DIR 'build\bcm2836') + '\'
           $buildLog = Join-Path $artifact 'msbuild-arm64-release.log'
           $manifest = @(
             'Project: Raspberry Pi Arasan SDHC miniport (bcm2836sdhc)',
@@ -121,7 +122,7 @@ jobs:
           Set-Content -LiteralPath (Join-Path $artifact 'BUILD-MANIFEST.txt') -Value $manifest -Encoding utf8
           Copy-Item -LiteralPath $source -Destination (Join-Path $artifact 'bcm2836sdhc.c')
 
-          & $env:MSBUILD_PATH $solution '/t:bcm2836sdhc:Build' '/p:Configuration=Release' '/p:Platform=ARM64' '/p:SignMode=Off' '/p:EnableInf2cat=false' '/m' '/v:normal' "/flp:logfile=$buildLog;verbosity=normal"
+          & $env:MSBUILD_PATH $project '/t:Build' '/p:Configuration=Release' '/p:Platform=ARM64' "/p:SolutionDir=$solutionDir" '/p:SignMode=Off' '/p:EnableInf2cat=false' '/m' '/v:normal' "/flp:logfile=$buildLog;verbosity=normal"
           $exitCode = $LASTEXITCODE
           if ($exitCode -ne 0) {
             "MSBuild exit code: $exitCode" | Add-Content -LiteralPath (Join-Path $artifact 'BUILD-MANIFEST.txt')
