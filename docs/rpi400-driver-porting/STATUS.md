@@ -165,3 +165,8 @@ Workflow change in commit `a697e1684fea6aee1783b7a4631855824f1d5a6d` removes cer
 
 At this note's update time, the new runs had not reached the package-verification step. Do not mark the package ready or ask the user to install until one run successfully finishes all verification commands and uploads its output.
 
+Follow-up on the first store-free verification attempt:
+- Run #17 failed before executing signature checks because PowerShell parsed `"$Label: ..."` as an invalid scoped-variable reference. This is confirmed in its log (ParserError at the warning/output line), not a driver build failure.
+- Commit `f7bf8f044bd0b0ae959031dfced70d4546790b45` changes that warning to `-f` format-string interpolation.
+- Run #19 tests that parser fix together with the store-free SignTool checks: https://github.com/xpcpp/Rpi_Testing/actions/runs/38129381573
+
