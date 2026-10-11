@@ -113,41 +113,53 @@ jobs:
           $dirs | ForEach-Object { Write-Host "  $_" }
           "Found WDK tools: $(($found.Name | Sort-Object -Unique) -join ', ')"
 
-      - name: Fill missing ARM64 package x86 validation helpers from matching WDK package
+      - name: Repair WDK NuGet host-validator paths
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $packages = Join-Path $env:UPSTREAM_DIR 'packages'
           $arm64 = Join-Path $packages 'Microsoft.Windows.WDK.arm64.10.0.28000.2526\c'
           $x64 = Join-Path $packages 'Microsoft.Windows.WDK.x64.10.0.28000.2526\c'
-          $pairs = @(
-            @{
-              Source = Join-Path $x64 'bin\10.0.28000.0\x86'
-              Destination = Join-Path $arm64 'bin\10.0.28000.0\x86'
-            },
-            @{
-              Source = Join-Path $x64 'build\10.0.28000.0\x86'
-              Destination = Join-Path $arm64 'build\10.0.28000.0\x86'
-            }
-          )
-          foreach ($pair in $pairs) {
-            if (Test-Path -LiteralPath $pair.Source) {
-              New-Item -ItemType Directory -Path $pair.Destination -Force | Out-Null
-              Copy-Item -Path (Join-Path $pair.Source '*') -Destination $pair.Destination -Recurse -Force
-              Write-Host "Copied matching WDK host validation helpers:"
-              Write-Host "  From: $($pair.Source)"
-              Write-Host "  To:   $($pair.Destination)"
-            } else {
-              Write-Warning "Matching helper directory not present: $($pair.Source)"
-            }
+
+          # The ARM64 NuGet targets on this x64 runner point at an x86 ApiValidator path
+          # even when the ARM64 WDK package omits that host executable. Supply the matching
+          # version's x64 host tool set at the exact path referenced by those targets.
+          $expectedToolDir = Join-Path $arm64 'bin\10.0.28000.0\x86'
+          $sourceToolDir = Join-Path $x64 'bin\10.0.28000.0\x64'
+          if (Test-Path -LiteralPath $sourceToolDir) {
+            New-Item -ItemType Directory -Path $expectedToolDir -Force | Out-Null
+            Copy-Item -Path (Join-Path $sourceToolDir '*') -Destination $expectedToolDir -Recurse -Force
+            Write-Host "Copied matching WDK x64 host tools into target-referenced folder:"
+            Write-Host "  From: $sourceToolDir"
+            Write-Host "  To:   $expectedToolDir"
+          } else {
+            Write-Warning "Matching x64 host-tool directory not present: $sourceToolDir"
           }
-          $required = @(
-            (Join-Path $arm64 'bin\10.0.28000.0\x86\ApiValidator.exe'),
-            (Join-Path $arm64 'bin\10.0.28000.0\x86\Aitstatic.exe'),
-            (Join-Path $arm64 'bin\10.0.28000.0\x86\Microsoft.Kits.Drivers.ApiValidator.dll'),
-            (Join-Path $arm64 'build\10.0.28000.0\x86\InfVerif.dll')
-          )
-          foreach ($path in $required) {
+
+          # InfVerif is loaded by the WDK target as x86\InfVerif.dll relative to its build tree.
+          # Search the exact pinned-kit NuGet folders and mirror the DLL plus adjacent DLL dependencies.
+          $searchRoots = @($packages, (Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin')) |
+            Where-Object { Test-Path -LiteralPath $_ }
+          $dllMatches = Get-ChildItem -Path $searchRoots -Filter 'InfVerif.dll' -File -Recurse -ErrorAction SilentlyContinue
+          $exactKit = $dllMatches | Where-Object { $_.FullName -match '10\.0\.28000\.0' } | Select-Object -First 1
+          $expectedInfDir = Join-Path $arm64 'build\10.0.28000.0\x86'
+          if ($exactKit) {
+            New-Item -ItemType Directory -Path $expectedInfDir -Force | Out-Null
+            Copy-Item -LiteralPath $exactKit.FullName -Destination (Join-Path $expectedInfDir 'InfVerif.dll') -Force
+            Get-ChildItem -LiteralPath $exactKit.DirectoryName -File |
+              Where-Object { $_.Extension -ieq '.dll' -and $_.Name -ne 'InfVerif.dll' } |
+              Copy-Item -Destination $expectedInfDir -Force
+            Write-Host "InfVerif helper source: $($exactKit.FullName)"
+          } else {
+            Write-Warning 'No InfVerif.dll found in the pinned 10.0.28000.0 tool trees; the compile artifact will still be preserved if linking succeeds.'
+          }
+
+          foreach ($path in @(
+            (Join-Path $expectedToolDir 'ApiValidator.exe'),
+            (Join-Path $expectedToolDir 'Aitstatic.exe'),
+            (Join-Path $expectedToolDir 'Microsoft.Kits.Drivers.ApiValidator.dll'),
+            (Join-Path $expectedInfDir 'InfVerif.dll')
+          )) {
             Write-Host "$(Test-Path -LiteralPath $path): $path"
           }
 
