@@ -170,3 +170,14 @@ Follow-up on the first store-free verification attempt:
 - Commit `f7bf8f044bd0b0ae959031dfced70d4546790b45` changes that warning to `-f` format-string interpolation.
 - Run #19 tests that parser fix together with the store-free SignTool checks: https://github.com/xpcpp/Rpi_Testing/actions/runs/38129381573
 
+Follow-up — Run #19 reaches SignTool verification but matcher missed wrapped trust error
+
+Run #19 (job `114440339956`) successfully built and independently validated the INF; signed the driver; generated the catalog; and signed the catalog. SignTool then returned this expected self-signed root trust error during driver verification, split across lines:
+`A certificate chain processed, but terminated in a root certificate which is not trusted by the trust provider.`
+No hash-mismatch or invalid-signature message was reported. The step failed because the workflow's matching expression assumed the message was on one line.
+
+Commit `3ff5dbeca47d78481deefdceace06a31fc1c1381` normalizes whitespace in SignTool output before matching the explicit root-trust message. The helper still throws if it sees hash-mismatch, invalid-signature, missing-signature, missing-catalog or other unexpected failure strings. Run #20 is now testing that fix:
+https://github.com/xpcpp/Rpi_Testing/actions/runs/38129528880
+
+Run #20's most recent check: setup, checkout, MSBuild discovery, source fetch, and INF patch all passed; NuGet WDK/SDK restore was still running, so the signature-check change has not yet been validated in a completed run. Do not install any artifact from failed runs.
+
