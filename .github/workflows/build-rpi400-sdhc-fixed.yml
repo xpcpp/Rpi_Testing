@@ -249,6 +249,122 @@ jobs:
               Add-Content -LiteralPath (Join-Path $artifact 'BUILD-MANIFEST.txt')
           }
 
+      - name: Independently validate INF and create test-signed ARM64 package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $artifact = Join-Path $env:GITHUB_WORKSPACE '_sdhc_ci_artifact'
+          $package = Join-Path $artifact 'rpi400-sdhc-test-package'
+          New-Item -ItemType Directory -Path $package -Force | Out-Null
+
+          $sys = Join-Path $artifact 'bcm2836sdhc.sys'
+          $inf = Join-Path $artifact 'bcm2836sdhc.inf'
+          if (-not (Test-Path -LiteralPath $sys) -or -not (Test-Path -LiteralPath $inf)) {
+            throw "Compile candidate .sys/.inf missing; not creating a package."
+          }
+          Copy-Item -LiteralPath $sys -Destination $package
+          Copy-Item -LiteralPath $inf -Destination $package
+
+          $packages = Join-Path $env:UPSTREAM_DIR 'packages'
+          $kitRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10'
+          $searchRoots = @($packages, (Join-Path $kitRoot 'bin')) | Where-Object { Test-Path -LiteralPath $_ }
+          $tools = Get-ChildItem -Path $searchRoots -Filter '*.exe' -File -Recurse -ErrorAction SilentlyContinue
+
+          function Find-Tool([string]$Name) {
+            $matches = @($tools | Where-Object { $_.Name -ieq $Name })
+            if (-not $matches.Count) { throw "Required WDK tool not found: $Name" }
+            $pinned = $matches | Where-Object { $_.FullName -match '10\.0\.28000\.0' -and $_.FullName -match '\\x64\\' } | Select-Object -First 1
+            if (-not $pinned) { $pinned = $matches | Where-Object { $_.FullName -match '10\.0\.28000\.0' } | Select-Object -First 1 }
+            if (-not $pinned) { $pinned = $matches | Select-Object -First 1 }
+            return $pinned.FullName
+          }
+
+          $infverif = Find-Tool 'infverif.exe'
+          $inf2cat = Find-Tool 'inf2cat.exe'
+          $signtool = Find-Tool 'signtool.exe'
+
+          # The WDK MSBuild target logs a DLL-loading exception for its bundled InfVerif task.
+          # Run the supported command-line validator explicitly against the stamped package INF.
+          $infLog = Join-Path $artifact 'infverif-standalone.log'
+          Push-Location $package
+          try {
+            & $infverif '/u' '/v' (Join-Path $package 'bcm2836sdhc.inf') 2>&1 |
+              Tee-Object -FilePath $infLog
+            $infExit = $LASTEXITCODE
+          } finally {
+            Pop-Location
+          }
+          "InfVerif command: $infverif /u /v bcm2836sdhc.inf" |
+            Add-Content -LiteralPath (Join-Path $artifact 'BUILD-MANIFEST.txt')
+          "InfVerif exit code: $infExit" |
+            Add-Content -LiteralPath (Join-Path $artifact 'BUILD-MANIFEST.txt')
+          if ($infExit -ne 0) {
+            throw "Standalone InfVerif failed (exit $infExit); see infverif-standalone.log. Package will remain unsigned."
+          }
+
+          # Sign the driver image first; Inf2Cat then hashes the final driver and INF.
+          $subject = "CN=Rpi_Testing SDHC Test Signing CI $env:GITHUB_RUN_ID"
+          $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject $subject -CertStoreLocation 'Cert:\CurrentUser\My' -KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm SHA256 -KeyExportPolicy Exportable -NotAfter (Get-Date).AddYears(1)
+
+          $pfx = Join-Path $env:RUNNER_TEMP 'rpi400-sdhc-test-signing.pfx'
+          $passwordText = [guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N')
+          $password = ConvertTo-SecureString $passwordText -AsPlainText -Force
+          Export-PfxCertificate -Cert $cert -FilePath $pfx -Password $password | Out-Null
+          $cer = Join-Path $package 'rpi400-sdhc-test.cer'
+          Export-Certificate -Cert $cert -FilePath $cer | Out-Null
+
+          try {
+            & $signtool sign /v /fd SHA256 /f $pfx /p $passwordText (Join-Path $package 'bcm2836sdhc.sys')
+            if ($LASTEXITCODE -ne 0) { throw "SignTool failed signing bcm2836sdhc.sys (exit $LASTEXITCODE)." }
+
+            & $inf2cat "/driver:$package" '/os:10_NI_ARM64' '/verbose'
+            if ($LASTEXITCODE -ne 0) { throw "Inf2Cat failed for Windows 11 22H2 ARM64 (exit $LASTEXITCODE)." }
+
+            $cat = Join-Path $package 'bcm2836sdhc.cat'
+            if (-not (Test-Path -LiteralPath $cat)) { throw "Inf2Cat returned success but catalog file not found: $cat" }
+
+            & $signtool sign /v /fd SHA256 /f $pfx /p $passwordText $cat
+            if ($LASTEXITCODE -ne 0) { throw "SignTool failed signing catalog (exit $LASTEXITCODE)." }
+
+            Import-Certificate -FilePath $cer -CertStoreLocation 'Cert:\CurrentUser\Root' | Out-Null
+            Import-Certificate -FilePath $cer -CertStoreLocation 'Cert:\CurrentUser\TrustedPublisher' | Out-Null
+
+            & $signtool verify /v /pa (Join-Path $package 'bcm2836sdhc.sys')
+            if ($LASTEXITCODE -ne 0) { throw "Embedded driver signature verification failed." }
+            & $signtool verify /v /pa '/c' $cat (Join-Path $package 'bcm2836sdhc.inf')
+            if ($LASTEXITCODE -ne 0) { throw "Catalog signature/package verification failed." }
+
+            @'
+          TEST-SIGNED EXPERIMENTAL DRIVER PACKAGE — NOT A PRODUCTION/RELEASE DRIVER
+
+          Hardware/OS target: Raspberry Pi 400, Windows 11 ARM64 (build 22621), ACPI\BCM2847 SDC1.
+          Source: raspberrypi/windows-drivers commit 31c2c748e6358711cd72467b7ad52da08691e54b.
+          Contains the upstream cleanup-callback and early-interrupt fixes.
+          This package is not yet validated on physical Pi 400 hardware. Successful installation does not guarantee SDIO child enumeration or CYW43455 Wi-Fi; a separate Windows WLAN function driver is still required.
+
+          Signing: per-run self-signed test certificate. Only the public .cer is included; the temporary private key is not included.
+          Windows requires appropriate test-signing configuration and trust of this certificate before loading a test-signed kernel driver. Secure Boot may block TESTSIGNING changes; prepare recovery/BitLocker access before making any boot-security changes.
+
+          Caution: this is an SD host-controller miniport. A defective host driver can hang/crash the system or affect SDC1. Do not install on a primary/productive system. Preserve a recovery path and inspect the included INF/build logs first.
+          '@ | Set-Content -LiteralPath (Join-Path $package 'README-TEST-INSTALL.txt') -Encoding UTF8
+
+            'Standalone InfVerif: PASS (/u /v).' |
+              Add-Content -LiteralPath (Join-Path $artifact 'BUILD-MANIFEST.txt')
+            'Inf2Cat: PASS (/os:10_NI_ARM64).' |
+              Add-Content -LiteralPath (Join-Path $artifact 'BUILD-MANIFEST.txt')
+            'Test signing: PASS (ephemeral CI code-signing certificate; private key excluded).' |
+              Add-Content -LiteralPath (Join-Path $artifact 'BUILD-MANIFEST.txt')
+            Get-FileHash -Algorithm SHA256 (Join-Path $package 'bcm2836sdhc.sys'),
+              (Join-Path $package 'bcm2836sdhc.inf'),
+              (Join-Path $package 'bcm2836sdhc.cat'),
+              $cer |
+              Format-Table -AutoSize | Out-String |
+              Add-Content -LiteralPath (Join-Path $artifact 'BUILD-MANIFEST.txt')
+          } finally {
+            Remove-Item -LiteralPath $pfx -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($cert.Thumbprint)" -Force -ErrorAction SilentlyContinue
+          }
+
       - name: Upload compile candidate and logs
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
