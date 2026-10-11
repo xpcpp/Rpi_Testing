@@ -113,6 +113,44 @@ jobs:
           $dirs | ForEach-Object { Write-Host "  $_" }
           "Found WDK tools: $(($found.Name | Sort-Object -Unique) -join ', ')"
 
+      - name: Fill missing ARM64 package x86 validation helpers from matching WDK package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $packages = Join-Path $env:UPSTREAM_DIR 'packages'
+          $arm64 = Join-Path $packages 'Microsoft.Windows.WDK.arm64.10.0.28000.2526\c'
+          $x64 = Join-Path $packages 'Microsoft.Windows.WDK.x64.10.0.28000.2526\c'
+          $pairs = @(
+            @{
+              Source = Join-Path $x64 'bin\10.0.28000.0\x86'
+              Destination = Join-Path $arm64 'bin\10.0.28000.0\x86'
+            },
+            @{
+              Source = Join-Path $x64 'build\10.0.28000.0\x86'
+              Destination = Join-Path $arm64 'build\10.0.28000.0\x86'
+            }
+          )
+          foreach ($pair in $pairs) {
+            if (Test-Path -LiteralPath $pair.Source) {
+              New-Item -ItemType Directory -Path $pair.Destination -Force | Out-Null
+              Copy-Item -Path (Join-Path $pair.Source '*') -Destination $pair.Destination -Recurse -Force
+              Write-Host "Copied matching WDK host validation helpers:"
+              Write-Host "  From: $($pair.Source)"
+              Write-Host "  To:   $($pair.Destination)"
+            } else {
+              Write-Warning "Matching helper directory not present: $($pair.Source)"
+            }
+          }
+          $required = @(
+            (Join-Path $arm64 'bin\10.0.28000.0\x86\ApiValidator.exe'),
+            (Join-Path $arm64 'bin\10.0.28000.0\x86\Aitstatic.exe'),
+            (Join-Path $arm64 'bin\10.0.28000.0\x86\Microsoft.Kits.Drivers.ApiValidator.dll'),
+            (Join-Path $arm64 'build\10.0.28000.0\x86\InfVerif.dll')
+          )
+          foreach ($path in $required) {
+            Write-Host "$(Test-Path -LiteralPath $path): $path"
+          }
+
       - name: Verify required upstream fixes and build ARM64 driver
         shell: pwsh
         run: |
