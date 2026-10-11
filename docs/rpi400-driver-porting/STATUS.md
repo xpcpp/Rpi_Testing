@@ -5,9 +5,9 @@
 
 ## Current phase
 
-**Phase 1 — platform/bus evidence review.** Both Windows baseline diagnostics and the Raspberry Pi OS diagnostic bundle have now been reviewed. No new driver has been installed.
+**Phase 1 — static review of the Windows SDIO path.** Windows baseline, Windows resource/parent report, Linux diagnostics, and the user's SDHC installation-history/signing-state report have all been reviewed. No more generic diagnostic collection is planned unless static analysis identifies a specific missing datum.
 
-**Explicit stop:** the user has already tested the upstream Arasan SDHC driver (bcm2836sdhc) previously and confirmed it did not work. Do not rebuild/reinstall it as a presumed fix. Its temporary CI build workflow was removed.
+**Explicit stop:** the user has already tested the upstream Arasan SDHC driver (bcm2836sdhc) and confirmed it does not work. Do not ask the user to reinstall/rebuild it, repeat certificate/Test Signing checks, or run another generic collector. Its temporary CI build workflow was removed.
 
 ## Windows baseline evidence
 
@@ -29,6 +29,15 @@ Source bundle: rpi400-diagnostics-20261011-083921.tar.gz.
 - glxinfo was not installed and vulkaninfo was run without a valid XDG_RUNTIME_DIR, so this bundle does not prove desktop OpenGL rendering or a full graphical-session test. Vulkan device enumeration does identify the V3D Vulkan driver.
 - The script's separate SDIO identity section was blank, but kernel logs and wlan0's sysfs parent independently confirm SDIO enumeration and a working driver path.
 
+
+## Additional Windows SDIO and failed-driver evidence
+
+- The Windows resource report identifies SDC1 as `ACPI\\BCM2847\\0`, ACPI path `_SB.GDV0.SDC1`, parent `ACPI\\ACPI0004\\1`; it remains Code 28 / problem status `0xC0000490`. The collector did not retrieve resource/resource-requirement properties for devices, so it does **not** establish the MMIO range or IRQ assignment.
+- SetupAPI history shows the first `bcm2836sdhc.inf` import failing with `0x800B0109` (untrusted root). A later attempt staged the package as `oem22.inf`, selected it for `ACPI\\BCM2847`, configured the service and copied `bcm2836sdhc.sys`; a restart was required. The package was then removed from Driver Store at 03:29. Current report: service not installed, .sys file still exists on disk, device remains Code 28. This history does not prove successful controller start after reboot.
+- The read-only signing report found the original catalog/.sys signature chain not trusted by the current trust provider and no explicit `testsigning`/ `nointegritychecks` lines in the captured BCD output. There were no matching Code Integrity or System events in the collected event-log query. Do not treat this as a reason to repeat signing checks; the known driver attempt already failed from the user's perspective.
+- Upstream `raspberrypi/windows-drivers` issue [#24](https://github.com/raspberrypi/windows-drivers/issues/24) reports SDHC sample-derived drivers encountering PnP/interrupt disconnect failures when removed, and reports first-boot driver resets on then-current Windows releases. This is a plausible risk to assess in source, **not proof** of the user's exact failure.
+- Next work is offline/static: inspect the SDHCI miniport implementation and teardown/interrupt lifecycle, compare the source's resource assumptions with Pi 400 SDC1 ACPI (`_CRS`/IRQ/MMIO) and the already collected diagnostics, then identify a concrete code/compatibility issue before proposing any new build. No further user-side command is required for this review.
+
 ## Source research — do not confuse a matching INF with a working driver
 
 Pinned source reference: [raspberrypi/windows-drivers](https://github.com/raspberrypi/windows-drivers/tree/88ee238c9debecce810d208cac1e5f36add3d2a1), commit 88ee238c9debecce810d208cac1e5f36add3d2a1.
@@ -47,21 +56,17 @@ The Linux evidence confirms that the Pi 400's internal WLAN hardware, SDIO trans
 
 For graphics, Linux provides a practical reference: BCM2711 vc4 display/KMS plus v3d DRM and Mesa V3DV. The Windows side currently only proves Microsoft Basic Display output, so Windows GPU work remains a separate and much larger WDDM KMD + user-mode implementation effort.
 
-## Next action — Windows resource/parent evidence
+## Next action — offline/static driver review
 
-Run this read-only collector from an elevated PowerShell session:
-
-    Set-ExecutionPolicy -Scope Process Bypass
-    .\\tools\\rpi400\\Collect-WindowsPiResources.ps1
-
-Upload the generated RPi400-Hardware-Resources-*.zip. It collects resources, parent relations, compatible IDs, problem status and display/SD-host details. No drivers or settings are changed.
+The requested Windows resource/parent report and signing-state report have been uploaded and reviewed. Do not ask the user to run another generic collector or repeat the known-failing installation. Inspect the existing SDHCI miniport lifecycle, interrupt handling, and SDC1 ACPI resource contract first. Only propose a code change/build if this review identifies a concrete hypothesis and a validation plan that does not simply repeat the failed attempt.
 
 ## Phase tracker
 
 - [x] Initial Windows diagnostics collected and reviewed.
 - [x] Linux diagnostics collected and reviewed: SDIO Wi-Fi and Linux V3D path confirmed working.
 - [x] Mark previously tested bcm2836sdhc driver as not a candidate to rebuild blindly; removed its reference-build workflow.
-- [ ] **Phase 1 — Windows bus/platform mapping:** collect detailed resources; identify the four unmapped ACPI/PNP entries; determine where Windows SDIO enumeration diverges from Linux.
+- [x] **Phase 1 — Windows baseline/resource and install-history evidence collected.** Device resource values were not exposed by the collector; do not request another generic report.
+- [ ] **Phase 1 — offline/static review:** inspect SDHCI implementation and SDC1 ACPI resource contract; assess upstream interrupt/teardown issue #24 before proposing a distinct experiment.
 - [ ] **Phase 2 — built-in CYW43455 Wi-Fi:** after the Windows bus path is understood, design/assess a Windows-native implementation using WiFiCx/KMDF/NetAdapterCx. Advanced monitor/injection features are not in the initial scope.
 - [ ] **Phase 3 — GPU diagnosis:** compare Windows display/render stack with Linux vc4/v3d/Mesa evidence and audit available Windows roskmd.sys materials.
 - [ ] **Phase 4 — real 3D acceleration:** long-term implementation requiring a working WDDM render kernel driver and compatible user-mode graphics runtime; not a build-only task.
