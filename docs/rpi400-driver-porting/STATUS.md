@@ -148,3 +148,20 @@ Run #16: https://github.com/xpcpp/Rpi_Testing/actions/runs/38128944914
 
 Run #15 uploaded artifact ID `11698571117`, but signature verification did not run because trust-store import failed. The artifact is not install-ready. Run #16 still needs to complete INF validation, signing, both certificate-store imports, and SignTool verification before any package can be considered suitable for cautious hardware testing.
 
+## CI follow-up — Run #16 confirms certificate-store API stall
+
+Run #16 (job `114439066188`) logs show the signing sequence still succeeds:
+- standalone InfVerif reports `INF is VALID`;
+- SignTool successfully signs `bcm2836sdhc.sys`;
+- Inf2Cat creates `bcm2836sdhc.cat` with no errors/warnings;
+- SignTool successfully signs the catalog.
+
+Then the separate non-interactive PowerShell process performing the .NET `X509Store` Root import makes no stdout/stderr progress and is terminated after 30 seconds. This is the third certificate-store write path tried (PowerShell Import-Certificate, CertUtil, .NET X509Store), with all three blocking or failing in this hosted runner. Run #16 artifact ID `11698756480` includes the timeout log, public cert and signed output, but has no final signature-verification result and is not install-ready.
+
+Workflow change in commit `a697e1684fea6aee1783b7a4631855824f1d5a6d` removes certificate-store writes from CI and instead runs SignTool verification. The wrapper accepts only SignTool's explicit untrusted-self-signed-root result, and only when it reports no file/catalog hash or signature mismatch; the manifest labels this separately from full trusted-chain verification. The test computer still must import the included public `.cer` into its trust stores for normal test-signature trust.
+- Additional safety fix in commit `4f3a9e9b0118e268a7fd2f7fe3bfe7d2164deae8`: checks the catalog file independently from the INF's catalog membership check and fixes PowerShell output interpolation.
+- Run #17: https://github.com/xpcpp/Rpi_Testing/actions/runs/38129322393
+- Run #18: https://github.com/xpcpp/Rpi_Testing/actions/runs/38129342670
+
+At this note's update time, the new runs had not reached the package-verification step. Do not mark the package ready or ask the user to install until one run successfully finishes all verification commands and uploads its output.
+
