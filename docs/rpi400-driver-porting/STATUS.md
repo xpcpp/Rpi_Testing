@@ -60,7 +60,7 @@ For graphics, Linux provides a practical reference: BCM2711 vc4 display/KMS plus
 
 ## Next action — targeted fixed-source candidate
 
-Static review is documented in [SDHC-SOURCE-REVIEW.md](SDHC-SOURCE-REVIEW.md). The next distinct engineering step is a reproducible ARM64 build from upstream commit 31c2c748e6358711cd72467b7ad52da08691e54b (or a later reviewed snapshot) containing PR #25 and PR #26. This is not the user's 2020 binary. Keep compile validation separate from package signing and device installation; no Secure Boot or Test Signing settings should be changed as part of CI. No further user-side commands are needed for the static review.
+Static review is documented in [SDHC-SOURCE-REVIEW.md](SDHC-SOURCE-REVIEW.md). Workflow [build-rpi400-sdhc-fixed.yml](../../.github/workflows/build-rpi400-sdhc-fixed.yml) has been committed and its first run is [#38112208529](https://github.com/xpcpp/Rpi_Testing/actions/runs/38112208529). It clones upstream commit 31c2c748e6358711cd72467b7ad52da08691e54b (containing PR #25 and PR #26), restores WDK/SDK NuGet packages and builds only the ARM64 Release bcm2836sdhc target. This is not the user's 2020 binary. It deliberately produces an unsigned compile candidate and logs, not an installable driver package. Keep compile validation separate from package signing and device installation; no Secure Boot or Test Signing settings should be changed as part of CI. No further user-side commands are needed for the static review.
 
 ## Phase tracker
 
