@@ -120,3 +120,21 @@ Run #14: https://github.com/xpcpp/Rpi_Testing/actions/runs/38128414398
 
 Run #12 did upload an artifact despite cancellation (artifact ID `11697554578`), but its signature verification step did not finish. Do not treat it as verified or install-ready. Keep all CI outputs experimental until the new run completes verification and the candidate is tested on hardware.
 
+## CI follow-up — Run #14 failure identified
+
+Run #14 (job `114437507994`) completed with failure at 2026-10-11 09:30 UTC. The relevant package checks passed:
+- Standalone InfVerif: `INF is VALID`.
+- SignTool signed `bcm2836sdhc.sys`.
+- Inf2Cat generated `bcm2836sdhc.cat` successfully with no reported errors/warnings.
+- SignTool signed the catalog successfully.
+
+The failure is now confirmed at the next operation: `certutil.exe -user -f -addstore Root <certificate.cer>` ran for 30 seconds without returning and was terminated by the new timeout. This is a certificate-store import problem, not a compiler, INF or catalog-generation failure. The artifact (ID `11698050859`) was uploaded for diagnosis, but because trust-store import and final signature verification did not complete, it is not a verified install-ready package.
+
+Run #15 workflow hardening is in commit `d0335477a5e5295aac463671a328728d03a6b8b1`:
+- Added CertUtil's `-silent` option to both CurrentUser Root and TrustedPublisher imports, to avoid any hidden interactive/crypto-context prompt.
+- The bounded wrapper now writes captured stdout/stderr into a timeout log after killing a stalled process, so the next timeout should retain useful evidence.
+
+Run #15: https://github.com/xpcpp/Rpi_Testing/actions/runs/38128690575
+
+No install is recommended until Run #15 completes all signature checks. Even a fully test-signed package is experimental until tested on the physical Pi 400 with a recovery path.
+
