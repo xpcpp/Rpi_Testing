@@ -102,3 +102,21 @@ Run #13: https://github.com/xpcpp/Rpi_Testing/actions/runs/38127948017
 
 This is diagnostics/CI hardening only. Do not install any unsigned compile candidate. Treat a test-signed package as experimental and not hardware-validated until INF validation, catalog creation, signature verification, and a controlled Pi 400 hardware test all pass.
 
+## CI follow-up — certificate-store stage suspected in Run #12/#13
+
+Reviewing the completed/cancelled Run #12 logs (job `114434196250`) after they became available showed:
+- standalone InfVerif passed; output says `INF is VALID` (with only the existing BootCritical warning);
+- SignTool successfully signed `bcm2836sdhc.sys`;
+- Inf2Cat completed catalog generation with no reported errors or warnings;
+- SignTool successfully signed `bcm2836sdhc.cat`;
+- after catalog signing, there is a roughly nine-minute gap with no command output before cancellation. The next operations in the script were PowerShell `Import-Certificate` calls, followed by signature verification. The exact blocking command cannot be proven from this log, but certificate-store import is now the primary suspected blind spot.
+
+Run #13 (commit `3ebd0f67fe4aa66c250b27105001d010c586eadf`) was also still in step 10 several minutes later. The workflow has therefore been changed again in commit `b5235053a6661481e6a95cf4da42cf0dd5b2b590`:
+- replace the two unbounded `Import-Certificate` cmdlets with `certutil.exe` imports;
+- run each import through the same bounded/logged process wrapper with a 30-second timeout;
+- reduce the job timeout from 30 to 18 minutes.
+
+Run #14: https://github.com/xpcpp/Rpi_Testing/actions/runs/38128414398
+
+Run #12 did upload an artifact despite cancellation (artifact ID `11697554578`), but its signature verification step did not finish. Do not treat it as verified or install-ready. Keep all CI outputs experimental until the new run completes verification and the candidate is tested on hardware.
+
