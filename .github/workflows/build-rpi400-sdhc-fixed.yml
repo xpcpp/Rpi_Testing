@@ -89,6 +89,30 @@ jobs:
             }
           }
 
+      - name: Expose WDK host tools on PATH
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $roots = @(
+            (Join-Path $env:UPSTREAM_DIR 'packages'),
+            (Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin')
+          ) | Where-Object { Test-Path -LiteralPath $_ }
+          $wanted = @('stampinf.exe', 'tracewpp.exe', 'inf2cat.exe', 'signtool.exe', 'infverif.exe', 'apivalidator.exe', 'wpp.exe')
+          $found = Get-ChildItem -Path $roots -File -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $wanted -contains $_.Name.ToLowerInvariant() }
+          $stampinf = $found | Where-Object { $_.Name -ieq 'stampinf.exe' } | Select-Object -First 1
+          if (-not $stampinf) {
+            throw "stampinf.exe not found under WDK NuGet packages or Windows Kits bin. Roots searched: $($roots -join '; ')"
+          }
+          $dirs = $found.DirectoryName | Sort-Object -Unique
+          foreach ($dir in $dirs) {
+            $dir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          }
+          "StampInf: $($stampinf.FullName)"
+          "Added tool directories to PATH:"
+          $dirs | ForEach-Object { Write-Host "  $_" }
+          "Found WDK tools: $($found.Name | Sort-Object -Unique -join ', ')"
+
       - name: Verify required upstream fixes and build ARM64 driver
         shell: pwsh
         run: |
