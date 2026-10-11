@@ -271,11 +271,11 @@ jobs:
           $tools = Get-ChildItem -Path $searchRoots -Filter '*.exe' -File -Recurse -ErrorAction SilentlyContinue
 
           function Find-Tool([string]$Name) {
-            $matches = @($tools | Where-Object { $_.Name -ieq $Name })
-            if (-not $matches.Count) { throw "Required WDK tool not found: $Name" }
-            $pinned = $matches | Where-Object { $_.FullName -match '10\.0\.28000\.0' -and $_.FullName -match '\\x64\\' } | Select-Object -First 1
-            if (-not $pinned) { $pinned = $matches | Where-Object { $_.FullName -match '10\.0\.28000\.0' } | Select-Object -First 1 }
-            if (-not $pinned) { $pinned = $matches | Select-Object -First 1 }
+            $toolCandidates = @($tools | Where-Object { $_.Name -ieq $Name })
+            if (-not $toolCandidates.Count) { throw "Required WDK tool not found: $Name" }
+            $pinned = $toolCandidates | Where-Object { $_.FullName -match '10\.0\.28000\.0' -and $_.FullName -match '\\x64\\' } | Select-Object -First 1
+            if (-not $pinned) { $pinned = $toolCandidates | Where-Object { $_.FullName -match '10\.0\.28000\.0' } | Select-Object -First 1 }
+            if (-not $pinned) { $pinned = $toolCandidates | Select-Object -First 1 }
             return $pinned.FullName
           }
 
