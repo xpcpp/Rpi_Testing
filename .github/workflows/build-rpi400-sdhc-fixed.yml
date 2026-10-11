@@ -460,7 +460,9 @@ jobs:
                 return 'PASS_FULL_TRUST'
               }
 
-              $verifyText = Get-Content -LiteralPath $LogPath -Raw
+              # SignTool wraps the trust error across multiple output lines. Normalize whitespace
+              # before matching so the exact expected self-signed-root failure is recognized.
+              $verifyText = (Get-Content -LiteralPath $LogPath -Raw) -replace '\s+', ' '
               $expectedUntrustedRoot = $verifyText -match '(?i)A certificate chain processed, but terminated in a root certificate which is not trusted by the trust provider|0x800B0109'
               $integrityFailure = $verifyText -match '(?i)file digest mismatch|hash mismatch|invalid signature|no signature found|no matching catalog|digest did not match|0x80096010|0x80096004'
               if (-not $expectedUntrustedRoot -or $integrityFailure) {
