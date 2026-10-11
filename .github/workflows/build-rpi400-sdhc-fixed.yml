@@ -369,6 +369,23 @@ jobs:
             if (-not $proc.WaitForExit($TimeoutSeconds * 1000)) {
               try { $proc.Kill($true) } catch {}
               try { $proc.WaitForExit(5000) | Out-Null } catch {}
+              $partialOut = ''
+              $partialErr = ''
+              try { if ($stdoutTask.Wait(2000)) { $partialOut = $stdoutTask.GetAwaiter().GetResult() } } catch {}
+              try { if ($stderrTask.Wait(2000)) { $partialErr = $stderrTask.GetAwaiter().GetResult() } } catch {}
+              $timeoutLog = @(
+                "Label: $Label"
+                "Executable: $ToolPath"
+                "Result: TIMEOUT after $TimeoutSeconds seconds"
+                "ProcessId: $($proc.Id)"
+                ''
+                'Captured standard output before/after termination:'
+                $partialOut
+                ''
+                'Captured standard error before/after termination:'
+                $partialErr
+              ) -join [Environment]::NewLine
+              [System.IO.File]::WriteAllText($LogPath, $timeoutLog, [System.Text.UTF8Encoding]::new($false))
               throw "$Label exceeded $TimeoutSeconds seconds and was terminated. Inspect $LogPath."
             }
             $proc.WaitForExit()
@@ -431,10 +448,10 @@ jobs:
             $certutil = Join-Path $env:WINDIR 'System32\certutil.exe'
             if (-not (Test-Path -LiteralPath $certutil)) { throw "certutil.exe not found: $certutil" }
             $rootImportLog = Join-Path $artifact 'certutil-import-root.log'
-            $rootImportExit = Invoke-LoggedTool -Label 'Trust ephemeral cert in CurrentUser Root' -ToolPath $certutil -Arguments @('-user', '-f', '-addstore', 'Root', $cer) -LogPath $rootImportLog -TimeoutSeconds 30
+            $rootImportExit = Invoke-LoggedTool -Label 'Trust ephemeral cert in CurrentUser Root' -ToolPath $certutil -Arguments @('-silent', '-user', '-f', '-addstore', 'Root', $cer) -LogPath $rootImportLog -TimeoutSeconds 30
             if ($rootImportExit -ne 0) { throw "certutil Root import failed (exit $rootImportExit); see $rootImportLog." }
             $publisherImportLog = Join-Path $artifact 'certutil-import-publisher.log'
-            $publisherImportExit = Invoke-LoggedTool -Label 'Trust ephemeral cert in CurrentUser TrustedPublisher' -ToolPath $certutil -Arguments @('-user', '-f', '-addstore', 'TrustedPublisher', $cer) -LogPath $publisherImportLog -TimeoutSeconds 30
+            $publisherImportExit = Invoke-LoggedTool -Label 'Trust ephemeral cert in CurrentUser TrustedPublisher' -ToolPath $certutil -Arguments @('-silent', '-user', '-f', '-addstore', 'TrustedPublisher', $cer) -LogPath $publisherImportLog -TimeoutSeconds 30
             if ($publisherImportExit -ne 0) { throw "certutil TrustedPublisher import failed (exit $publisherImportExit); see $publisherImportLog." }
 
             $verifyDriverLog = Join-Path $artifact 'signtool-verify-driver.log'
