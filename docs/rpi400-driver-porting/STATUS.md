@@ -138,3 +138,13 @@ Run #15: https://github.com/xpcpp/Rpi_Testing/actions/runs/38128690575
 
 No install is recommended until Run #15 completes all signature checks. Even a fully test-signed package is experimental until tested on the physical Pi 400 with a recovery path.
 
+## CI follow-up — Run #15's exact failure and Run #16 fix
+
+Run #15 (job `114438320860`) failure is not a compile or INF issue. Its log shows `certutil.exe` returned immediately with `CertUtil: Unexpected "-Silent" option`; the runner's CertUtil does not support that flag. Previously, the unbounded-looking certificate import in Run #14 had timed out, so this was a failed attempted workaround.
+
+Run #16's workflow commit `b680654fc5c749cfe16a95d121c13c33951ea390` removes CertUtil from the certificate-import path and uses a non-interactive child PowerShell process that directly adds the public certificate to the CurrentUser Root and TrustedPublisher stores through .NET `X509Store`. Each import remains bounded to 30 seconds and keeps separate logs.
+
+Run #16: https://github.com/xpcpp/Rpi_Testing/actions/runs/38128944914
+
+Run #15 uploaded artifact ID `11698571117`, but signature verification did not run because trust-store import failed. The artifact is not install-ready. Run #16 still needs to complete INF validation, signing, both certificate-store imports, and SignTool verification before any package can be considered suitable for cautious hardware testing.
+
