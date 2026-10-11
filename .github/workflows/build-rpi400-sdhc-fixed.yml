@@ -445,14 +445,37 @@ jobs:
             # Avoid certificate-store PowerShell cmdlets here: an earlier run emitted no
             # output for ~9 minutes immediately after catalog signing, with these imports next.
             # certutil is invoked through the bounded wrapper so a store operation cannot hang CI.
-            $certutil = Join-Path $env:WINDIR 'System32\certutil.exe'
-            if (-not (Test-Path -LiteralPath $certutil)) { throw "certutil.exe not found: $certutil" }
-            $rootImportLog = Join-Path $artifact 'certutil-import-root.log'
-            $rootImportExit = Invoke-LoggedTool -Label 'Trust ephemeral cert in CurrentUser Root' -ToolPath $certutil -Arguments @('-silent', '-user', '-f', '-addstore', 'Root', $cer) -LogPath $rootImportLog -TimeoutSeconds 30
-            if ($rootImportExit -ne 0) { throw "certutil Root import failed (exit $rootImportExit); see $rootImportLog." }
-            $publisherImportLog = Join-Path $artifact 'certutil-import-publisher.log'
-            $publisherImportExit = Invoke-LoggedTool -Label 'Trust ephemeral cert in CurrentUser TrustedPublisher' -ToolPath $certutil -Arguments @('-silent', '-user', '-f', '-addstore', 'TrustedPublisher', $cer) -LogPath $publisherImportLog -TimeoutSeconds 30
-            if ($publisherImportExit -ne 0) { throw "certutil TrustedPublisher import failed (exit $publisherImportExit); see $publisherImportLog." }
+            # Avoid interactive certificate-import utilities. Open the CurrentUser stores
+            # directly via .NET X509Store inside a non-interactive child PowerShell process.
+            $certImportScript = Join-Path $env:RUNNER_TEMP 'import-rpi400-test-cert.ps1'
+            @'
+          param(
+            [Parameter(Mandatory=$true)][string]$CertificatePath,
+            [Parameter(Mandatory=$true)][string]$StoreName
+          )
+          $ErrorActionPreference = 'Stop'
+          $certificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($CertificatePath)
+          $store = [System.Security.Cryptography.X509Certificates.X509Store]::new(
+            $StoreName,
+            [System.Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser
+          )
+          try {
+            $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+            $store.Add($certificate)
+            Write-Output ("Added certificate thumbprint {0} to CurrentUser\\{1}" -f $certificate.Thumbprint, $StoreName)
+          } finally {
+            $store.Close()
+            $certificate.Dispose()
+          }
+          '@ | Set-Content -LiteralPath $certImportScript -Encoding UTF8
+
+            $pwshExe = (Get-Command pwsh.exe -ErrorAction Stop).Source
+            $rootImportLog = Join-Path $artifact 'certificate-import-root.log'
+            $rootImportExit = Invoke-LoggedTool -Label 'Trust ephemeral cert in CurrentUser Root' -ToolPath $pwshExe -Arguments @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $certImportScript, '-CertificatePath', $cer, '-StoreName', 'Root') -LogPath $rootImportLog -TimeoutSeconds 30
+            if ($rootImportExit -ne 0) { throw "X509Store Root import failed (exit $rootImportExit); see $rootImportLog." }
+            $publisherImportLog = Join-Path $artifact 'certificate-import-publisher.log'
+            $publisherImportExit = Invoke-LoggedTool -Label 'Trust ephemeral cert in CurrentUser TrustedPublisher' -ToolPath $pwshExe -Arguments @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $certImportScript, '-CertificatePath', $cer, '-StoreName', 'TrustedPublisher') -LogPath $publisherImportLog -TimeoutSeconds 30
+            if ($publisherImportExit -ne 0) { throw "X509Store TrustedPublisher import failed (exit $publisherImportExit); see $publisherImportLog." }
 
             $verifyDriverLog = Join-Path $artifact 'signtool-verify-driver.log'
             $verifyDriverExit = Invoke-LoggedTool -Label 'Verify embedded driver signature' -ToolPath $signtool -Arguments @('verify', '/v', '/pa', (Join-Path $package 'bcm2836sdhc.sys')) -LogPath $verifyDriverLog -TimeoutSeconds 90
