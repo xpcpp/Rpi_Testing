@@ -14,7 +14,7 @@ jobs:
   build-sdhc-arm64:
     name: Build bcm2836sdhc (ARM64, unsigned candidate)
     runs-on: windows-2025-vs2026
-    timeout-minutes: 30
+    timeout-minutes: 18
 
     env:
       UPSTREAM_REPO: https://github.com/raspberrypi/windows-drivers.git
@@ -425,8 +425,17 @@ jobs:
             $signCatExit = Invoke-LoggedTool -Label 'Sign catalog' -ToolPath $signtool -Arguments @('sign', '/v', '/fd', 'SHA256', '/f', $pfx, '/p', $passwordText, $cat) -LogPath $catSignLog -TimeoutSeconds 90
             if ($signCatExit -ne 0) { throw "SignTool failed signing catalog (exit $signCatExit); see $catSignLog." }
 
-            Import-Certificate -FilePath $cer -CertStoreLocation 'Cert:\CurrentUser\Root' | Out-Null
-            Import-Certificate -FilePath $cer -CertStoreLocation 'Cert:\CurrentUser\TrustedPublisher' | Out-Null
+            # Avoid certificate-store PowerShell cmdlets here: an earlier run emitted no
+            # output for ~9 minutes immediately after catalog signing, with these imports next.
+            # certutil is invoked through the bounded wrapper so a store operation cannot hang CI.
+            $certutil = Join-Path $env:WINDIR 'System32\certutil.exe'
+            if (-not (Test-Path -LiteralPath $certutil)) { throw "certutil.exe not found: $certutil" }
+            $rootImportLog = Join-Path $artifact 'certutil-import-root.log'
+            $rootImportExit = Invoke-LoggedTool -Label 'Trust ephemeral cert in CurrentUser Root' -ToolPath $certutil -Arguments @('-user', '-f', '-addstore', 'Root', $cer) -LogPath $rootImportLog -TimeoutSeconds 30
+            if ($rootImportExit -ne 0) { throw "certutil Root import failed (exit $rootImportExit); see $rootImportLog." }
+            $publisherImportLog = Join-Path $artifact 'certutil-import-publisher.log'
+            $publisherImportExit = Invoke-LoggedTool -Label 'Trust ephemeral cert in CurrentUser TrustedPublisher' -ToolPath $certutil -Arguments @('-user', '-f', '-addstore', 'TrustedPublisher', $cer) -LogPath $publisherImportLog -TimeoutSeconds 30
+            if ($publisherImportExit -ne 0) { throw "certutil TrustedPublisher import failed (exit $publisherImportExit); see $publisherImportLog." }
 
             $verifyDriverLog = Join-Path $artifact 'signtool-verify-driver.log'
             $verifyDriverExit = Invoke-LoggedTool -Label 'Verify embedded driver signature' -ToolPath $signtool -Arguments @('verify', '/v', '/pa', (Join-Path $package 'bcm2836sdhc.sys')) -LogPath $verifyDriverLog -TimeoutSeconds 90
